@@ -5,6 +5,7 @@
 #include <cerrno>
 #include <cstdlib>
 #include <unistd.h>
+#include <assert.h>
 
 using namespace std;
 
@@ -17,25 +18,79 @@ void die(string msg)
     abort();
 }
 
-// our demo read and write
-
-static void do_something(int conn_fd)
+void msg(string str)
 {
-    // reading data from the client
+    cerr << str << endl;
+}
 
-    char rbuff[64] = {};
-    ssize_t n = read(conn_fd, rbuff, sizeof(rbuff) - 1);
-    if (n < 0)
+// read_full and write_all function for reading and writing multiple bytes at a time
+
+static int read_full(int fd, char *rbuff, u_int32_t n)
+{
+    while (n > 0)
     {
-        cerr << stderr << "read() error" << endl;
-        return;
+        int rv = read(fd, rbuff, n);
+        if (rv <= 0)
+        {
+            return -1; // error
+        }
+        assert(u_int32_t(rv) <= n);
+        n -= (u_int32_t)rv;
+        rbuff += rv;
     }
-    cerr << stderr << "Client says " << rbuff << endl;
-    string msg = "world";
+    return 0;
+}
 
-    // Sending information to the client
+static int write_all(int fd, const char *msg, u_int32_t n)
+{
+    while (n > 0)
+    {
+        u_int32_t rv = write(fd, msg, n);
+        if (rv <= 0)
+            return -1; // error
+        assert(rv <= n);
+        n -= rv;
+        msg += rv;
+    }
+    return 0;
+}
 
-    write(conn_fd, msg.c_str(), msg.size());
+static u_int32_t k_max_len = 4096; // for the max length fothe message
+
+static int one_request(int connfd)
+{
+    char rbuff[4 + k_max_len];
+    errno = 0;
+    int err = read_full(connfd, rbuff, 4);
+    if (err != 0)
+        return -1;
+    u_int32_t len;
+    memcpy(&len, rbuff, 4);
+    if (len > k_max_len)
+    {
+        msg("too long ");
+        return -1;
+    }
+    err = read_full(connfd, rbuff + 4, len);
+    if (err)
+    {
+        msg("read() error ");
+        return -1;
+    }
+
+    // printing msg stored
+
+    string message(rbuff + 4, len);
+    cout << "Client says " << message << endl;
+
+    // writing something
+
+    const string ack = "recieved";
+    len = (u_int32_t)ack.length();
+    char w_buff[4 + len];
+    memcpy(w_buff, &len, 4);
+    memcpy(w_buff + 4, ack.data(), len);
+    return write_all(connfd, w_buff, len + 4);
 }
 
 int main()
@@ -74,7 +129,12 @@ int main()
         int conn_fd = accept(fd, (struct sockaddr *)&client_addr, &addlen);
         if (conn_fd < 0)
             continue;
-        do_something(conn_fd);
+        while (true)
+        {
+            int err = one_request(conn_fd);
+            if (err)
+                break;
+        }
         close(conn_fd);
     }
     close(fd);
